@@ -509,7 +509,7 @@ async def check_user_access(message_or_query, require_assigned_server=False):
         )
         encoded_msg = urllib.parse.quote(auto_msg)
         system_config = get_system_config()
-        admin_contact = system_config.get("admin_contact", "thengrithy")
+        admin_contact = system_config.get("admin_contact", "thengrithy").lstrip("@").strip()
         contact_admin_url = f"https://t.me/{admin_contact}?text={encoded_msg}"
         
         blocked_text = (
@@ -1463,23 +1463,29 @@ async def restricted_otp_bot_handler(client: Client, message: Message):
         system_config = get_system_config()
         webapp_url = (
             os.environ.get("NGROK_DASHBOARD_URL")
+            or os.environ.get("BACKEND_URL")
             or system_config.get("webapp_url", "").strip()
-            or "http://localhost:5000"
         )
-        if not webapp_url.startswith("http://") and not webapp_url.startswith("https://"):
-            webapp_url = "http://" + webapp_url
-            
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 Go to Web", url=webapp_url)],
-            [InlineKeyboardButton("🆔 Get User ID", callback_data="get_user_id")]
-        ])
+        buttons = []
+        if webapp_url:
+            if not webapp_url.startswith("http://") and not webapp_url.startswith("https://"):
+                webapp_url = "https://" + webapp_url
+            # Telegram strictly disallows localhost, 127.0.0.1, 0.0.0.0 in inline button URLs
+            if not any(bad in webapp_url.lower() for bad in ["localhost", "127.0.0.1", "0.0.0.0", "::1"]) and "." in webapp_url:
+                buttons.append([InlineKeyboardButton("🌐 Go to Web", url=webapp_url)])
+        buttons.append([InlineKeyboardButton("🆔 Get User ID", callback_data="get_user_id")])
+        keyboard = InlineKeyboardMarkup(buttons)
         assigned_server = user_data.get("assigned_server", "main")
         reply_msg = (
             f"✅ You have License to use this bot.\n"
             f"🖥 **Assigned Server:** `{assigned_server}`\n\n"
             f"Click below to access the web dashboard or get your User ID:"
         )
-        await message.reply_text(reply_msg, reply_markup=keyboard)
+        try:
+            await message.reply_text(reply_msg, reply_markup=keyboard)
+        except Exception:
+            safe_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🆔 Get User ID", callback_data="get_user_id")]])
+            await message.reply_text(reply_msg, reply_markup=safe_kb)
     else:
         user_full_name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip() or "User"
         user_id = message.from_user.id
@@ -1492,7 +1498,7 @@ async def restricted_otp_bot_handler(client: Client, message: Message):
         )
         encoded_msg = urllib.parse.quote(auto_msg)
         system_config = get_system_config()
-        admin_contact = system_config.get("admin_contact", "thengrithy")
+        admin_contact = system_config.get("admin_contact", "thengrithy").lstrip("@").strip().lstrip("@").strip()
         contact_admin_url = f"https://t.me/{admin_contact}?text={encoded_msg}"
         
         blocked_text = (
@@ -1505,7 +1511,10 @@ async def restricted_otp_bot_handler(client: Client, message: Message):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💬 Contact Admin / ទាក់ទង Admin", url=contact_admin_url)]
         ])
-        await message.reply_text(blocked_text, reply_markup=keyboard)
+        try:
+            await message.reply_text(blocked_text, reply_markup=keyboard)
+        except Exception:
+            await message.reply_text(blocked_text)
     
     raise StopPropagation()
 

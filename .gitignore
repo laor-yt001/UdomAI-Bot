@@ -17,6 +17,7 @@ temp_*
 *.gguf
 *.safetensors
 *.bin
+!Houngguo VIP Downloader/lib/data/*.bin
 *.pth
 model/
 models/

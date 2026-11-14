@@ -14,8 +14,22 @@ const fs = require('fs');
 const path = require('path');
 const { sm3 } = require('./sm3');
 
-const BRANCH_ONE_TABLE = fs.readFileSync(path.join(__dirname, 'data', 'branch_one.bin'));
-const AES_SBOX = fs.readFileSync(path.join(__dirname, 'data', 'aes_sbox.bin'));
+let BRANCH_ONE_TABLE;
+let AES_SBOX;
+try {
+  const pBranch = path.join(__dirname, 'data', 'branch_one.bin');
+  const pSbox = path.join(__dirname, 'data', 'aes_sbox.bin');
+  if (fs.existsSync(pBranch) && fs.existsSync(pSbox)) {
+    BRANCH_ONE_TABLE = fs.readFileSync(pBranch);
+    AES_SBOX = fs.readFileSync(pSbox);
+  } else {
+    throw new Error('branch_one.bin or aes_sbox.bin missing');
+  }
+} catch {
+  const embedded = require('./data_embedded');
+  BRANCH_ONE_TABLE = Buffer.from(embedded.BRANCH_ONE_BASE64, 'base64');
+  AES_SBOX = Buffer.from(embedded.AES_SBOX_BASE64, 'base64');
+}
 
 const APP_ID = '8662';
 const VERSION_CODE = '74332';
@@ -594,13 +608,13 @@ class AesV3 {
       const x = i * 8;
       k[i] = u8(
         ((d[x] >> 4) & 2) |
-          (d[x + 1] & 64) |
-          ((d[x + 2] >> 2) & 1) |
-          ((d[x + 3] << 3) & 128) |
-          ((d[x + 4] >> 1) & 4) |
-          ((d[x + 5] << 3) & 16) |
-          ((d[x + 6] << 5) & 32) |
-          ((d[x + 7] >> 4) & 8)
+        (d[x + 1] & 64) |
+        ((d[x + 2] >> 2) & 1) |
+        ((d[x + 3] << 3) & 128) |
+        ((d[x + 4] >> 1) & 4) |
+        ((d[x + 5] << 3) & 16) |
+        ((d[x + 6] << 5) & 32) |
+        ((d[x + 7] >> 4) & 8)
       );
     }
     k[31] = 1;
