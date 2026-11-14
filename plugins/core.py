@@ -1193,34 +1193,43 @@ class RealtimeTimer:
 message_start_times = {}
 message_last_edits = {}
 
-async def safe_edit_text(message, text, reply_markup=None):
+async def safe_edit_text(message, text, reply_markup=None, force=False):
     if not message:
         return None
     msg_id = getattr(message, 'id', None)
     now = time.time()
     is_done = any(x in str(text) for x in ["Done!", "complete!", "❌", "Received:", "Detected:", "✅", "🛑"])
+    is_interactive = (reply_markup is not None) or force
 
-    # Throttle intermediate progress updates (min 3.0s) to prevent Telegram FloodWait
-    if msg_id and not is_done:
+    # Throttle intermediate progress updates (min 3.0s) to prevent Telegram FloodWait.
+    # Interactive menu transitions and buttons MUST NEVER be throttled so clicks work immediately on the 1st tap!
+    if msg_id and not is_done and not is_interactive:
         last_t = message_last_edits.get(msg_id, 0.0)
         if now - last_t < 3.0:
             return message
 
     if msg_id:
-        if msg_id not in message_start_times:
-            message_start_times[msg_id] = now
-        elapsed = int(now - message_start_times[msg_id])
-        mins, secs = divmod(elapsed, 60)
-        clean_t = re.sub(r"^⏱️?\s*\[\d+:\d+\]\s*", "", str(text)).strip()
-        if not is_done and elapsed > 0:
-            text = f"⏱ [{mins:02d}:{secs:02d}] {clean_t}"
-        else:
-            text = clean_t
-        if is_done:
+        if is_interactive:
+            # Interactive menu transitions: clear progress timer and record action time
             message_start_times.pop(msg_id, None)
-            message_last_edits.pop(msg_id, None)
-        else:
             message_last_edits[msg_id] = now
+            clean_t = re.sub(r"^⏱️?\s*\[\d+:\d+\]\s*", "", str(text)).strip()
+            text = clean_t
+        else:
+            if msg_id not in message_start_times:
+                message_start_times[msg_id] = now
+            elapsed = int(now - message_start_times[msg_id])
+            mins, secs = divmod(elapsed, 60)
+            clean_t = re.sub(r"^⏱️?\s*\[\d+:\d+\]\s*", "", str(text)).strip()
+            if not is_done and elapsed > 0:
+                text = f"⏱ [{mins:02d}:{secs:02d}] {clean_t}"
+            else:
+                text = clean_t
+            if is_done:
+                message_start_times.pop(msg_id, None)
+                message_last_edits.pop(msg_id, None)
+            else:
+                message_last_edits[msg_id] = now
 
     async def _do_edit(m, t, rm):
         # Pyrogram: if message has media (photo/video), edit_caption must be used
@@ -3114,39 +3123,57 @@ async def _do_publish(client: Client, query_msg, callback_query, short_id: str, 
 # ==================== THUMBNAIL FLOW HELPERS ====================
 
 async def _ask_thumbnail(callback_query, query_msg, job: dict):
-    """Store job params and ask user if they want to add a thumbnail."""
-    user_id = callback_query.from_user.id
-    thumb_pending[user_id] = job
+    """Store job params and present instant start options (1-click) or optional custom thumbnail."""
+    user_id = callback_query.from_user.id if (callback_query and getattr(callback_query, 'from_user', None)) else query_msg.chat.id
     job_id = f"{user_id}"
+    job["user_id"] = user_id
+    thumb_pending[user_id] = job
+    thumb_pending[job_id] = job
+    if getattr(query_msg, 'chat', None):
+        thumb_pending[query_msg.chat.id] = job
+        thumb_pending[str(query_msg.chat.id)] = job
+
     action_label = "🎙 Voice Dubbing" if "dub" in job["action"] else "📝 AI Recap"
     short_id = job.get("short_id", "")
-    src_lang = job.get("src_lang", "auto")
+    src_lang = str(job.get("src_lang", "auto")).upper()
+    target_lang = str(job.get("target_lang", "km")).upper()
     
     # Back button goes back to Target Language Selection (Step 2)
     mode = "dub_url" if "url" in job.get("action", "") else ("recap_url" if "recap" in job.get("action", "") and "url" in job.get("action", "") else ("recap_file" if "recap" in job.get("action", "") else "dub_file"))
-    back_cb = f"src_sel|{mode}|{short_id}|{src_lang}"
+    back_cb = f"src_sel|{mode}|{short_id}|{job.get('src_lang', 'auto')}"
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🖼️ Yes, add thumbnail", callback_data=f"thumb_yes|{job_id}"),
-            InlineKeyboardButton("▶️ No, skip", callback_data=f"thumb_no|{job_id}")
+            InlineKeyboardButton("🚀 Start Dubbing Now (Keep BGM)", callback_data=f"bgm_yes|{job_id}"),
+        ],
+        [
+            InlineKeyboardButton("🔇 Voice Only (No BGM)", callback_data=f"bgm_no|{job_id}"),
+            InlineKeyboardButton("🖼️ Add Thumbnail", callback_data=f"thumb_yes|{job_id}")
         ],
         [
             InlineKeyboardButton("🔙 Back", callback_data=back_cb)
         ]
     ])
     await safe_edit_text(query_msg,
-        f"🎬 **{action_label} — Ready to Start!**\n\n"
-        "🖼️ **Do you want to add a custom thumbnail image to the output video?**\n\n"
-        "Thumbnail will be embedded as the video cover art.",
-        reply_markup=keyboard
+        f"🎬 **{action_label} — Ready!**\n\n"
+        f"🎯 **Target Language:** `{target_lang}`\n"
+        f"🗣 **Source Language:** `{src_lang}`\n\n"
+        "Click **🚀 Start Dubbing Now** to start immediately (1 click), or choose an option below:",
+        reply_markup=keyboard,
+        force=True
     )
 
 async def _ask_bgm(client, query_msg, job: dict):
     """Ask user if they want background sound."""
-    user_id = query_msg.chat.id
-    thumb_pending[user_id] = job
+    user_id = job.get("user_id") or (query_msg.from_user.id if getattr(query_msg, 'from_user', None) else query_msg.chat.id)
     job["step"] = "await_bgm"
     job_id = f"{user_id}"
+    job["user_id"] = user_id
+    thumb_pending[user_id] = job
+    thumb_pending[job_id] = job
+    if getattr(query_msg, 'chat', None):
+        thumb_pending[query_msg.chat.id] = job
+        thumb_pending[str(query_msg.chat.id)] = job
+
     # Back button goes back to thumbnail selection
     back_cb = f"thumb_back|{job_id}"
     keyboard = InlineKeyboardMarkup([
@@ -3165,7 +3192,8 @@ async def _ask_bgm(client, query_msg, job: dict):
         "Do you want to keep the original sound effects and background music in the translated video?\n"
         "- **Yes**: AI Voice + Sound Effects + Background Music\n"
         "- **No**: Pure AI Voice only",
-        reply_markup=keyboard
+        reply_markup=keyboard,
+        force=True
     )
 
 async def _run_thumb_job(client: Client, query_msg, job: dict):
@@ -4908,7 +4936,9 @@ async def button_callback(client, callback_query):
     # Fast ACK: Immediately acknowledge menu/navigation clicks so Telegram dismisses button spinners instantly
     fast_ack_prefixes = (
         "file_show_", "url_show_", "src_sel|", "dl_vid|", "dl_qual|", "dl_aud|",
-        "pst_", "pub_", "thumb_", "bgm_", "clip_", "hg_sel_", "hg_tgl|", "hg_clr|",
+        "dub_lang|", "url_dub_lang|", "recap_file|", "recap_url|",
+        "ocr_exec|", "exp_exec|", "url_ocr_exec|", "url_exp_exec|",
+        "pst_", "pub_", "thumb_", "bgm_", "clip_", "conv_", "hg_sel_", "hg_tgl|", "hg_clr|",
         "show_how_to_use", "how_to_use_", "show_help", "show_about", "cb_model_list", "start_menu"
     )
     if any(data.startswith(p) for p in fast_ack_prefixes):
@@ -5913,7 +5943,7 @@ async def button_callback(client, callback_query):
             await callback_query.answer("Session expired. Please send the file again.", show_alert=True)
             return
         keyboard = build_source_language_keyboard("dub_file", short_id)
-        await safe_edit_text(query_msg, "🗣 **Step 1/2: Choose Source Language (ភាសាដើមនៃវីដេអូ/សំឡេង):**", reply_markup=keyboard)
+        await safe_edit_text(query_msg, "🗣 **Step 1/2: Choose Source Language (ភាសាដើមនៃវីដេអូ/សំឡេង):**", reply_markup=keyboard, force=True)
 
     elif data.startswith("file_show_recap|"):
         _, short_id = data.split("|")
@@ -5922,7 +5952,7 @@ async def button_callback(client, callback_query):
             await callback_query.answer("Session expired. Please send the file again.", show_alert=True)
             return
         keyboard = build_source_language_keyboard("recap_file", short_id)
-        await safe_edit_text(query_msg, "🗣 **Step 1/2: Choose Source Language (ភាសាដើមនៃវីដេអូ/សំឡេង):**", reply_markup=keyboard)
+        await safe_edit_text(query_msg, "🗣 **Step 1/2: Choose Source Language (ភាសាដើមនៃវីដេអូ/សំឡេង):**", reply_markup=keyboard, force=True)
 
     elif data.startswith("src_sel|"):
         parts = data.split("|")
@@ -5930,7 +5960,7 @@ async def button_callback(client, callback_query):
         keyboard = build_target_language_keyboard(mode, short_id, src_lang)
         src_label = "🌐 Auto-Detect" if src_lang == "auto" else src_lang.upper()
         action_title = "Voice Dubbing & Translation" if "dub" in mode else "AI Video Recap & Voiceover"
-        await safe_edit_text(query_msg, f"🗣 **Source Language:** `{src_label}`\n🎯 **Step 2/2: Choose Target Language for {action_title}:**", reply_markup=keyboard)
+        await safe_edit_text(query_msg, f"🗣 **Source Language:** `{src_label}`\n🎯 **Step 2/2: Choose Target Language for {action_title}:**", reply_markup=keyboard, force=True)
 
     elif data.startswith("file_show_ask|"):
         _, short_id = data.split("|")
@@ -6083,7 +6113,7 @@ async def button_callback(client, callback_query):
             await callback_query.answer("Session expired. Please send the link again.", show_alert=True)
             return
         keyboard = build_source_language_keyboard("dub_url", short_id)
-        await safe_edit_text(query_msg, f"🗣 **Step 1/2: Choose Source Language (ភាសាដើមនៃវីដេអូ/សំឡេង):**\n`{url}`", reply_markup=keyboard)
+        await safe_edit_text(query_msg, f"🗣 **Step 1/2: Choose Source Language (ភាសាដើមនៃវីដេអូ/សំឡេង):**\n`{url}`", reply_markup=keyboard, force=True)
 
     elif data.startswith("yt_direct|"):
         _, short_id = data.split("|")
@@ -6596,12 +6626,24 @@ async def button_callback(client, callback_query):
         # User wants to add thumbnail - prompt for image upload
         _, job_id = data.split("|", 1)
         user_id = callback_query.from_user.id
-        job = thumb_pending.get(user_id)
+        job = (
+            thumb_pending.get(user_id)
+            or thumb_pending.get(str(user_id))
+            or thumb_pending.get(job_id)
+            or thumb_pending.get(str(job_id))
+            or (thumb_pending.get(int(job_id)) if (job_id.isdigit() or (job_id.startswith('-') and job_id[1:].isdigit())) else None)
+            or thumb_pending.get(query_msg.chat.id)
+            or thumb_pending.get(str(query_msg.chat.id))
+        )
         if not job:
             await callback_query.answer("Session expired. Please start again.", show_alert=True)
             return
         job["step"] = "await_thumb"
         thumb_pending[user_id] = job
+        thumb_pending[job_id] = job
+        if getattr(query_msg, 'chat', None):
+            thumb_pending[query_msg.chat.id] = job
+            thumb_pending[str(query_msg.chat.id)] = job
         await callback_query.answer("", show_alert=False)
         keyboard = InlineKeyboardMarkup([
             [
@@ -6614,13 +6656,22 @@ async def button_callback(client, callback_query):
             "Send a **photo** (JPG/PNG) — it will be embedded as the video cover art.\n"
             "The processing will start immediately after you upload it.\n\n"
             "Or click **Skip** / **Back** below if you changed your mind:",
-            reply_markup=keyboard
+            reply_markup=keyboard,
+            force=True
         )
 
     elif data.startswith("thumb_back|"):
         _, job_id = data.split("|", 1)
         user_id = callback_query.from_user.id
-        job = thumb_pending.get(user_id)
+        job = (
+            thumb_pending.get(user_id)
+            or thumb_pending.get(str(user_id))
+            or thumb_pending.get(job_id)
+            or thumb_pending.get(str(job_id))
+            or (thumb_pending.get(int(job_id)) if (job_id.isdigit() or (job_id.startswith('-') and job_id[1:].isdigit())) else None)
+            or thumb_pending.get(query_msg.chat.id)
+            or thumb_pending.get(str(query_msg.chat.id))
+        )
         if not job:
             await callback_query.answer("Session expired. Please start again.", show_alert=True)
             return
@@ -6631,7 +6682,15 @@ async def button_callback(client, callback_query):
         # No thumbnail — proceed to ask background sound
         _, job_id = data.split("|", 1)
         user_id = callback_query.from_user.id
-        job = thumb_pending.pop(user_id, None)
+        job = (
+            thumb_pending.pop(user_id, None)
+            or thumb_pending.pop(str(user_id), None)
+            or thumb_pending.pop(job_id, None)
+            or thumb_pending.pop(str(job_id), None)
+            or (thumb_pending.pop(int(job_id), None) if (job_id.isdigit() or (job_id.startswith('-') and job_id[1:].isdigit())) else None)
+            or thumb_pending.pop(query_msg.chat.id, None)
+            or thumb_pending.pop(str(query_msg.chat.id), None)
+        )
         if not job:
             await callback_query.answer("Session expired. Please start again.", show_alert=True)
             return
@@ -6642,7 +6701,15 @@ async def button_callback(client, callback_query):
     elif data.startswith("bgm_yes|") or data.startswith("bgm_no|"):
         _, job_id = data.split("|", 1)
         user_id = callback_query.from_user.id
-        job = thumb_pending.pop(user_id, None)
+        job = (
+            thumb_pending.pop(user_id, None)
+            or thumb_pending.pop(str(user_id), None)
+            or thumb_pending.pop(job_id, None)
+            or thumb_pending.pop(str(job_id), None)
+            or (thumb_pending.pop(int(job_id), None) if (job_id.isdigit() or (job_id.startswith('-') and job_id[1:].isdigit())) else None)
+            or thumb_pending.pop(query_msg.chat.id, None)
+            or thumb_pending.pop(str(query_msg.chat.id), None)
+        )
         if not job:
             await callback_query.answer("Session expired. Please start again.", show_alert=True)
             return
@@ -6661,7 +6728,7 @@ async def button_callback(client, callback_query):
         action, short_id = parts[0], parts[1]
         cached_msg = url_cache.get(short_id)
         if not cached_msg:
-            await safe_edit_text(query_msg, "Session expired. Please send the file again.")
+            await safe_edit_text(query_msg, "Session expired. Please send the file again.", force=True)
             return
 
         src_lang = parts[2] if len(parts) >= 4 else 'auto'
