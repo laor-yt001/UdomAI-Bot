@@ -47,9 +47,9 @@
   },
   "__system_config__": {
     "gemini_api_keys": [],
-    "admin_contact": "",
+    "admin_contact": "thengrithy",
     "otp_bot_token": "",
-    "otp_bot_restricted_mode": true,
+    "otp_bot_restricted_mode": false,
     "webapp_url": "",
     "default_transcribe_engine": "local",
     "default_translate_engine": "gemini",

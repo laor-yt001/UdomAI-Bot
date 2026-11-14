@@ -14,6 +14,7 @@ _direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 DEFAULT_PAT = ""
 DEFAULT_REPOS = [
+    "laor-yt001/UdomAI-Bot",
     "doai-bot/main",
     "doai-bot/server1",
     "doai-bot/server2",

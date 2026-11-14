@@ -541,6 +541,11 @@ async def check_user_access(message_or_query, require_assigned_server=False):
         
     # If approved, check server restriction if requested
     if require_assigned_server:
+        # SUPER_ADMIN and ADMIN are never restricted by server assignment
+        from user_manager import AUTO_APPROVED_USERNAMES
+        if user_data.get("role") in ("SUPER_ADMIN", "ADMIN") or (getattr(tg_user, "username", None) and tg_user.username.lower() in [u.lower() for u in AUTO_APPROVED_USERNAMES]):
+            return True
+
         assigned_server = user_data.get("assigned_server", "main")
         current_server_id = os.environ.get("SERVER_ID", "main")
         
@@ -1448,13 +1453,27 @@ def _is_allowed_bot_func(flt, client, update):
 is_allowed_bot = filters.create(_is_allowed_bot_func)
 
 def _is_otp_bot_restricted_func(flt, client, update):
+    # Super admins and Admins are NEVER restricted
+    from_user = getattr(update, 'from_user', None)
+    if from_user:
+        uname = (getattr(from_user, 'username', '') or '').lower()
+        from user_manager import AUTO_APPROVED_USERNAMES, get_user
+        if uname in [u.lower() for u in AUTO_APPROVED_USERNAMES]:
+            return False
+        try:
+            u = get_user(from_user.id)
+            if u and u.get("role") in ("SUPER_ADMIN", "ADMIN"):
+                return False
+        except Exception:
+            pass
+
     system_config = get_system_config()
     if not system_config.get("otp_bot_restricted_mode", False):
         return False
         
     otp_bot = system_config.get("otp_bot_token")
     if not otp_bot or otp_bot == "main_bot":
-        return client.name == "my_bot"
+        return False
     else:
         return client.name == f"custom_bot_{otp_bot[:10]}"
 
@@ -1466,6 +1485,10 @@ async def restricted_otp_bot_handler(client: Client, message: Message):
         raise StopPropagation()
         
     user_data = register_or_update_user(message.from_user)
+    # Never restrict Super Admin or Admin
+    from user_manager import AUTO_APPROVED_USERNAMES
+    if user_data.get("role") in ("SUPER_ADMIN", "ADMIN") or (getattr(message.from_user, "username", None) and message.from_user.username.lower() in [u.lower() for u in AUTO_APPROVED_USERNAMES]):
+        return
     has_permission = (user_data.get("status") == "APPROVED")
     
     if has_permission:
