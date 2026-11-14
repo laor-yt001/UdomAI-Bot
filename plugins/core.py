@@ -2407,7 +2407,7 @@ const hg = require(process.argv[1]);
   const vid = process.argv[3];
   const dest = process.argv[4];
   const seriesName = process.argv[5] || '';
-  const r = await hg.downloadEpisode(seriesId, vid, dest, { retries: 2, seriesName });
+  const r = await hg.downloadEpisode(seriesId, vid, dest, { source: 'app', maxHeight: 1080, retries: 3, seriesName });
   console.log(JSON.stringify({ ok: !!r && !r.unavailable, bytes: (r && r.bytes) || 0, path: dest, unavailable: !!(r && r.unavailable) }));
 })().catch(e => {
   process.stderr.write(String(e && e.message ? e.message : e));
@@ -2453,7 +2453,7 @@ const hg = require(process.argv[1]);
   for (const ep of selected) {
     const dest = path.join(process.argv[4], hg.episodeFilename(series.name, ep.episode, series.episodeCount));
     try {
-      const r = await hg.downloadEpisode(series.seriesId, ep.vid, dest, { retries: 3 });
+      const r = await hg.downloadEpisode(series.seriesId, ep.vid, dest, { source: 'app', maxHeight: 1080, retries: 3 });
       results.push({ vid: ep.vid, episode: ep.episode, path: dest, ok: !!r && !r.unavailable, bytes: r && r.bytes ? r.bytes : 0 });
     } catch (e) {
       results.push({ vid: ep.vid, episode: ep.episode, path: dest, ok: false, error: String(e && e.message ? e.message : e) });

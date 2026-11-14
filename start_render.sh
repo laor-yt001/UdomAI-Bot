@@ -40,7 +40,18 @@ EOF
     export DUANJU_PROXY="http://127.0.0.1:1080"
     echo "WireGuard wireproxy active on 127.0.0.1:1080 (Proxies exported)"
 else
-    echo "No WireGuard config found in environment variables. Skipping wireproxy."
+    echo "No WireGuard config found in environment variables. Attempting automated wireguard_setup..."
+    python wireguard_setup.py || true
+    if [ -f wireproxy.conf ] && [ -f ./wireproxy ]; then
+        export USE_VPN_PROXY=true
+        export HTTP_PROXY="http://127.0.0.1:1080"
+        export HTTPS_PROXY="http://127.0.0.1:1080"
+        export ALL_PROXY="http://127.0.0.1:1080"
+        export http_proxy="http://127.0.0.1:1080"
+        export https_proxy="http://127.0.0.1:1080"
+        export all_proxy="http://127.0.0.1:1080"
+        export DUANJU_PROXY="http://127.0.0.1:1080"
+    fi
 fi
 
 # Start the python bot

@@ -839,10 +839,10 @@ function signRequest(base, params, body, dev, now = new Date(), sr = newSignRand
   const gorgon = encryptGorgon(body, query, khronos, sr.gorgon);
   const helios = encryptHelios(khronos, sr.helios);
   const medusa = generateMedusa(signedUrl, query, body, dev, khronos, unix, sr);
+  const hasBody = body && (Buffer.isBuffer(body) ? body.length > 0 : String(body).length > 0);
   const headers = {
     'User-Agent': USER_AGENT,
     Accept: 'application/json; charset=utf-8,application/x-protobuf',
-    'Content-Type': 'application/json; charset=UTF-8',
     'x-xs-from-web': '0',
     'x-ss-req-ticket': String(now.getTime()),
     'x-tt-request-tag': 't=0;n=0',
@@ -855,8 +855,11 @@ function signRequest(base, params, body, dev, now = new Date(), sr = newSignRand
     'x-gorgon': gorgon,
     'x-helios': helios,
     'x-medusa': medusa,
-    'x-ss-stub': md5(body || Buffer.alloc(0)).toString('hex').toUpperCase(),
   };
+  if (hasBody) {
+    headers['Content-Type'] = 'application/json; charset=UTF-8';
+    headers['x-ss-stub'] = md5(body).toString('hex').toUpperCase();
+  }
   return { url: signedUrl, headers };
 }
 

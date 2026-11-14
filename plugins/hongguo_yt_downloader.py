@@ -129,7 +129,7 @@ const hg = require(process.argv[1]);
   for (const ep of selected) {
     const dest = path.join(outDir, hg.episodeFilename(series.name, ep.episode, series.episodeCount));
     try {
-      const r = await hg.downloadEpisode(series.seriesId, ep.vid, dest, { retries: 3 });
+      const r = await hg.downloadEpisode(series.seriesId, ep.vid, dest, { source: 'app', maxHeight: 1080, retries: 3 });
       results.push({ vid: ep.vid, episode: ep.episode, path: dest, ok: !!(r && !r.unavailable), bytes: (r && r.bytes) || 0 });
     } catch(e) {
       results.push({ vid: ep.vid, episode: ep.episode, path: dest, ok: false, error: String(e && e.message ? e.message : e) });

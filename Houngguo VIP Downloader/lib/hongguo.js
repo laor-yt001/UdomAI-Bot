@@ -262,20 +262,20 @@ async function getEpisodeFromShare(seriesId, vid, opts = {}) {
  * Primary sources:
  *   1. Mobile-app API (CENC encrypted stream, decrypts via AES-CTR to full 1080p/720p duration)
  *   2. Direct high-speed share CDN (full episodes only, not 30s promo teaser)
- *   3. Website public player stream (first accessible episodes, 360p)
  *
- * opts.source: 'auto' (default) | 'app' | 'web' | 'share'
- * opts.maxHeight: cap the picked definition (e.g. 720)
+ * opts.source: 'app' (default) | 'share' | 'web'
+ * opts.maxHeight: cap the picked definition (e.g. 1080)
  * opts.seriesName: for strict verification
  */
 async function getEpisode(seriesId, vid, opts = {}) {
-  const source = opts.source || 'auto';
+  const source = opts.source || 'app';
+  const maxHeight = opts.maxHeight || 1080;
 
-  // 1) Mobile-app API: Primary source for guaranteed full duration & high definition
+  // 1) Mobile-app API: Primary source for guaranteed full duration & 1080p/720p high definition
   if (source !== 'web' && source !== 'share') {
     let appErr = null;
     try {
-      const r = await fqapi.resolveVideo(String(vid), { signal: opts.signal, maxHeight: opts.maxHeight, seriesId });
+      const r = await fqapi.resolveVideo(String(vid), { signal: opts.signal, maxHeight, seriesId });
       // Reject ByteVC2 (bvc2) streams – completely unplayable by standard players.
       // fqapi already blocks them, but add a final safety net here.
       const isUnplayable =
@@ -299,8 +299,7 @@ async function getEpisode(seriesId, vid, opts = {}) {
           pageUrl: `${BASE}/player/${seriesId}/${vid}`,
         };
       }
-      // ByteVC2 detected: fall through to share/web sources
-      appErr = new Error('ByteVC2 (bvc2) stream returned by app API – falling back to web/share source');
+      appErr = new Error('ByteVC2 (bvc2) stream returned by app API');
       if (source === 'app') throw appErr;
     } catch (e) {
       if (isAbort(e)) throw e;
@@ -309,18 +308,18 @@ async function getEpisode(seriesId, vid, opts = {}) {
     }
   }
 
-  // 2) Direct share CDN fallback
+  // 2) Direct share CDN fallback (only if caller did not restrict to app)
   if (source !== 'app' && source !== 'web') {
     try {
       const share = await getEpisodeFromShare(seriesId, vid, opts);
-      if (share && share.mainUrl) return share;
+      if (share && share.mainUrl && (!share.duration || share.duration > 30)) return share;
     } catch (e) {
       if (isAbort(e)) throw e;
     }
   }
 
-  // 3) Website public player stream fallback
-  if (source !== 'app' && source !== 'share') {
+  // 3) Website public player stream fallback (ONLY if caller explicitly requests source: 'web')
+  if (source === 'web') {
     try {
       const web = await getEpisodeFromWeb(seriesId, vid, opts);
       if (web && web.mainUrl) return web;
@@ -816,7 +815,7 @@ async function downloadEpisode(seriesId, vid, destPath, opts = {}) {
     try {
       if (!info) {
         if (onStage) onStage('resolving');
-        info = await getEpisode(seriesId, vid, { signal, source: opts.source, maxHeight: opts.maxHeight, seriesName: opts.seriesName });
+        info = await getEpisode(seriesId, vid, { signal, source: opts.source || 'app', maxHeight: opts.maxHeight || 1080, seriesName: opts.seriesName });
         if (!info) {
           if (attempt <= retries) {
             await sleep(1500 * attempt, signal);

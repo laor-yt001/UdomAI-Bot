@@ -13,20 +13,129 @@
  */
 
 const crypto = require('crypto');
+const http = require('http');
+const https = require('https');
+const tls = require('tls');
+const { URL } = require('url');
 const sign = require('./fqsign');
 
 const VIDEO_MODEL_HOSTS = [
   'https://api5-normal-sinfonlinea.fqnovel.com',
   'https://api5-normal-sinfonlineb.fqnovel.com',
+  'https://api.fqnovel.com',
+  'https://reading.snssdk.com',
 ];
 const VIDEO_TAB_MODEL_PATH = '/reading/bookapi/video_tab/video_model/v1/';
 const VIDEO_MODEL_PATH = '/novel/player/multi_video_model/v1/';
+const SINGLE_VIDEO_MODEL_PATH = '/novel/player/video_model/v1/';
 const VIDEO_MODEL_QUERY =
-  'iid=%IID%&device_id=%DID%&ac=wifi&channel=update_64&aid=8662&app_name=novelread&version_code=71332&version_name=7.1.3.32&device_platform=android&os=android&ssmix=a&device_type=25053RT47C&device_brand=Redmi&language=zh&os_api=36&os_version=16&manifest_version_code=71332&resolution=1280*2772&dpi=520&update_version_code=71332&host_abi=arm64-v8a&dragon_device_type=phone&pv_player=71332&compliance_status=0&need_personal_recommend=1&player_so_load=0&is_android_pad_screen=0&codec_type=0&format_type=h264&use_os_player=1&support_bvc=0&support_bytevc1=0&support_bytevc2=0';
+  'iid=%IID%&device_id=%DID%&ac=wifi&channel=update_64&aid=8662&app_name=novelread&version_code=74332&version_name=7.4.3.32&device_platform=android&os=android&ssmix=a&device_type=25053RT47C&device_brand=Redmi&language=zh&os_api=36&os_version=16&manifest_version_code=74332&resolution=1280*2772&dpi=520&update_version_code=74332&host_abi=arm64-v8a&dragon_device_type=phone&pv_player=74332&compliance_status=0&need_personal_recommend=1&player_so_load=0&is_android_pad_screen=0&codec_type=0&format_type=h264&use_os_player=1&support_bvc=0&support_bytevc1=0&support_bytevc2=0';
 const TYPE_CODES = ['1004', '1001', '0', '1', '2', '19'];
 
 /** Headers the CDN expects when the encrypted MP4 is fetched. */
-const MEDIA_HEADERS = { 'User-Agent': 'com.phoenix.read/71332', Referer: 'https://novel.snssdk.com/' };
+const MEDIA_HEADERS = { 'User-Agent': 'com.phoenix.read/74332', Referer: 'https://novel.snssdk.com/' };
+
+/* ------------------------------------------------------------------ */
+/* proxy agent (wireproxy / VPN tunneling on Render)                  */
+/* ------------------------------------------------------------------ */
+
+let _proxyAgent = null;
+let _cachedProxyStr = null;
+
+function getProxyAgent() {
+  const proxyStr =
+    process.env.DUANJU_PROXY ||
+    process.env.HTTPS_PROXY ||
+    process.env.HTTP_PROXY ||
+    process.env.https_proxy ||
+    process.env.http_proxy ||
+    process.env.ALL_PROXY ||
+    process.env.all_proxy;
+  if (!proxyStr) return null;
+  if (_proxyAgent && _cachedProxyStr === proxyStr) return _proxyAgent;
+
+  try {
+    const p = new URL(proxyStr.startsWith('http') ? proxyStr : 'http://' + proxyStr);
+    const agent = new https.Agent({
+      keepAlive: true,
+      createConnection(options, callback) {
+        const req = http.request({
+          host: p.hostname,
+          port: p.port || 80,
+          method: 'CONNECT',
+          path: `${options.host}:${options.port || 443}`,
+          headers: { Host: `${options.host}:${options.port || 443}` },
+        });
+        req.on('connect', (res, socket) => {
+          if (res.statusCode === 200) {
+            const tlsSocket = tls.connect(
+              {
+                socket,
+                servername: options.host,
+              },
+              () => callback(null, tlsSocket)
+            );
+            tlsSocket.on('error', callback);
+          } else {
+            callback(new Error(`Proxy CONNECT failed: HTTP ${res.statusCode}`));
+          }
+        });
+        req.on('error', callback);
+        req.end();
+      },
+    });
+    _cachedProxyStr = proxyStr;
+    _proxyAgent = agent;
+    return _proxyAgent;
+  } catch {
+    return null;
+  }
+}
+
+function requestViaAgent(targetUrl, { method = 'GET', headers = {}, body, timeoutMs = 10000, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(targetUrl);
+    const agent = getProxyAgent();
+    const isHttps = u.protocol === 'https:';
+    const client = isHttps ? https : http;
+    const reqHeaders = Object.assign({}, headers);
+    if (body && !reqHeaders['Content-Length']) {
+      reqHeaders['Content-Length'] = Buffer.isBuffer(body) ? body.length : Buffer.byteLength(body);
+    }
+    const req = client.request(
+      u,
+      {
+        method,
+        headers: reqHeaders,
+        agent: isHttps && agent ? agent : undefined,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const next = new URL(res.headers.location, u).toString();
+          return resolve(requestViaAgent(next, { method, headers, body, timeoutMs, signal }));
+        }
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const buf = Buffer.concat(chunks);
+          resolve({ status: res.statusCode, text: () => Promise.resolve(buf.toString('utf8')), headers: res.headers });
+        });
+      }
+    );
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        req.destroy(new Error('Aborted'));
+      }, { once: true });
+    }
+    req.on('timeout', () => {
+      req.destroy(new Error(`Request to ${u.host} timed out after ${timeoutMs}ms`));
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
 
 /* ------------------------------------------------------------------ */
 /* device identity                                                     */
@@ -144,21 +253,30 @@ function compact(v) {
   }
 }
 
-async function fetchJson(url, { method = 'GET', headers = {}, body, signal, retries = 0, timeoutMs = 3000 } = {}) {
+async function fetchJson(url, { method = 'GET', headers = {}, body, signal, retries = 2, timeoutMs = 10000 } = {}) {
   let last;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const timerCtrl = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : null;
-      let effectiveSignal = signal;
-      if (timerCtrl && signal) {
-        effectiveSignal = AbortSignal.any ? AbortSignal.any([signal, timerCtrl]) : signal;
-      } else if (timerCtrl) {
-        effectiveSignal = timerCtrl;
+      const agent = getProxyAgent();
+      let text, status;
+      if (agent) {
+        const res = await requestViaAgent(url, { method, headers, body, signal, timeoutMs });
+        status = res.status;
+        text = await res.text();
+      } else {
+        const timerCtrl = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : null;
+        let effectiveSignal = signal;
+        if (timerCtrl && signal) {
+          effectiveSignal = AbortSignal.any ? AbortSignal.any([signal, timerCtrl]) : signal;
+        } else if (timerCtrl) {
+          effectiveSignal = timerCtrl;
+        }
+        const res = await fetch(url, { method, headers, body, signal: effectiveSignal, redirect: 'follow' });
+        status = res.status;
+        text = await res.text();
       }
-      const res = await fetch(url, { method, headers, body, signal: effectiveSignal, redirect: 'follow' });
-      const text = await res.text();
-      if (res.status < 200 || res.status >= 300) {
-        last = new Error(`HTTP ${res.status} from ${new URL(url).host}: ${text.slice(0, 200)}`);
+      if (status < 200 || status >= 300) {
+        last = new Error(`HTTP ${status} from ${new URL(url).host}: ${text.slice(0, 200)}`);
       } else {
         try {
           return JSON.parse(text);
@@ -178,6 +296,32 @@ async function fetchJson(url, { method = 'GET', headers = {}, body, signal, retr
 /* ------------------------------------------------------------------ */
 /* video model                                                         */
 /* ------------------------------------------------------------------ */
+
+function makeSingleBody(vid, seriesId) {
+  return Buffer.from(
+    JSON.stringify({
+      video_id: String(vid),
+      video_album_id: seriesId ? String(seriesId) : undefined,
+      video_content_type: 1,
+      biz_param: {
+        detail_page_version: 0,
+        device_level: 1,
+        disable_digg_stat: false,
+        need_all_video_definition: true,
+        need_mp4_align: false,
+        use_os_player: true,
+        player_so_load: 0,
+        support_bvc: 0,
+        support_bytevc1: 0,
+        support_bytevc2: 0,
+        use_server_dns: false,
+        video_platform: 1024,
+        format_type: 'h264',
+        codec_type: 0,
+      },
+    })
+  );
+}
 
 function makeBody(typeCode, vid) {
   return Buffer.from(
@@ -258,7 +402,7 @@ async function fetchVideoModel(vid, opts = {}) {
     const endpoint = `${host}${VIDEO_TAB_MODEL_PATH}`;
     const { url, headers } = sign.signRequest(endpoint, params, null, dev);
     try {
-      const root = await fetchJson(url, { method: 'GET', headers, signal, retries: 0 });
+      const root = await fetchJson(url, { method: 'GET', headers, signal, retries: 1, timeoutMs: 8000 });
       if (root && (root.code === 0 || root.data)) {
         return extractModel(root, String(vid));
       }
@@ -267,8 +411,26 @@ async function fetchVideoModel(vid, opts = {}) {
     }
   }
 
-  // 2) Fallback: Multi-video model API (POST /novel/player/multi_video_model/v1/)
-  const maxAttempts = 1;
+  // 2) Single video model API (POST /novel/player/video_model/v1/)
+  for (const host of VIDEO_MODEL_HOSTS) {
+    if (signal && signal.aborted) throw new Error('Aborted');
+    const dev = getDevice();
+    const params = new sign.OrderedParams(VIDEO_MODEL_QUERY.replace('%IID%', dev.installId).replace('%DID%', dev.deviceId));
+    const endpoint = `${host}${SINGLE_VIDEO_MODEL_PATH}`;
+    const body = makeSingleBody(vid, seriesId);
+    const { url, headers } = sign.signRequest(endpoint, params, body, dev);
+    try {
+      const root = await fetchJson(url, { method: 'POST', headers, body, signal, retries: 1, timeoutMs: 8000 });
+      if (root && (root.code === 0 || root.data)) {
+        return extractModel(root, String(vid));
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+    }
+  }
+
+  // 3) Multi-video model API (POST /novel/player/multi_video_model/v1/)
+  const maxAttempts = 2;
   let lastErr = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -285,7 +447,7 @@ async function fetchVideoModel(vid, opts = {}) {
         const { url, headers } = sign.signRequest(endpoint, params, body, dev);
         let root;
         try {
-          root = await fetchJson(url, { method: 'POST', headers, body, signal, retries: 0 });
+          root = await fetchJson(url, { method: 'POST', headers, body, signal, retries: 1, timeoutMs: 8000 });
         } catch (e) {
           if (e && e.name === 'AbortError') throw e;
           lastErr = e;
@@ -360,6 +522,20 @@ function isH264Variant(item) {
   );
 }
 
+function parseHeight(item) {
+  let h = num(first(item.vheight, item.height));
+  if (!h) {
+    const def = String(first(item.definition, item.quality, '')).toLowerCase();
+    const m = def.match(/(\d+)p/);
+    if (m) h = parseInt(m[1], 10);
+    else if (def.includes('1080') || def.includes('full_hd') || def.includes('fhd')) h = 1080;
+    else if (def.includes('720') || def.includes('hd')) h = 720;
+    else if (def.includes('480') || def.includes('sd')) h = 480;
+    else if (def.includes('360')) h = 360;
+  }
+  return h || 0;
+}
+
 function pickVariant(variants, maxHeight) {
   function codecScore(item) {
     if (isByteVC2Variant(item)) {
@@ -378,7 +554,7 @@ function pickVariant(variants, maxHeight) {
   const scored = variants
     .map((item) => ({
       item,
-      h: num(first(item.vheight, item.height)),
+      h: parseHeight(item),
       w: num(first(item.vwidth, item.width)),
       br: num(item.bitrate),
       cs: codecScore(item),
@@ -391,8 +567,11 @@ function pickVariant(variants, maxHeight) {
   const candidates = playable.length ? playable : scored;
 
   candidates.sort((a, b) => {
+    // 1. Playable codec first (H.264 standard over other codecs)
     if (a.cs !== b.cs) return b.cs - a.cs;
+    // 2. Highest resolution first (1080p > 720p > 540p > 480p)
     if (a.h !== b.h) return b.h - a.h;
+    // 3. Highest bitrate first
     return b.br - a.br;
   });
 
@@ -515,5 +694,6 @@ module.exports = {
   deriveContentKey,
   decryptSpadeUrl,
   getDevice,
+  getProxyAgent,
   MEDIA_HEADERS,
 };
